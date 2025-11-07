@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pywg Demo</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>pywg WebGPU Demo</h1>
+      <p>
+        This page loads Pyodide and runs the sample kernels defined in the
+        <code>pywg</code> package. The demo falls back to NumPy when WebGPU is not
+        available.
+      </p>
+      <div id="status">Loading Pyodide…</div>
+      <div id="outputs"></div>
+      <script type="module" src="app.js"></script>
+    </main>
+  </body>
+</html>
