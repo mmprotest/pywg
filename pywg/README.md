@@ -1,6 +1,8 @@
 # pywg
 
-`pywg` is a proof-of-concept toolkit that lets you write numeric kernels in a restricted subset of Python and run them in the browser using WebGPU – no hand-written WGSL required. Kernels can also run on CPU-only machines through a NumPy based fallback path, so your code keeps working even when WebGPU is unavailable.
+> Python-first kernels that run anywhere – transpiled to WebGPU when you have it, powered by NumPy when you do not.
+
+`pywg` lets you express high-performance array kernels in a constrained subset of Python that feels familiar to NumPy users. The toolkit parses your Python functions into an intermediate representation, emits WGSL shaders, and executes them through a lightweight WebGPU runtime in the browser. When WebGPU is unavailable, the same programs execute via a NumPy-backed CPU fallback, so your code continues to work on standard Python interpreters.
 
 ```
 ┌──────────────┐      ┌─────────────┐      ┌────────────┐
@@ -11,22 +13,43 @@
   NumPy runtime                           WebGPU runtime
 ```
 
+The project ships with a full Python package, end-to-end tests, examples, and a Pyodide browser demo so you can validate the workflow locally or in CI.
+
+## Table of contents
+
+1. [Features](#features)
+2. [Installation](#installation)
+3. [Quick start](#quick-start)
+4. [DSL reference](#dsl-reference)
+5. [Architecture overview](#architecture-overview)
+6. [Execution backends](#execution-backends)
+7. [Examples](#examples)
+8. [Pyodide demo](#pyodide-demo)
+9. [Testing & quality](#testing--quality)
+10. [Troubleshooting](#troubleshooting)
+11. [Roadmap](#roadmap)
+12. [Contributing](#contributing)
+13. [License](#license)
+
 ## Features
 
-* Tiny, well-typed DSL with a familiar NumPy feel: `map`, `reduce`, `scan`, `matmul`.
-* Python-to-WGSL compiler with a compact IR and readable generated shader code.
-* Minimal WebGPU runtime written in modern JavaScript.
-* Pyodide bridge that makes the WebGPU runtime available in the browser.
-* CPU fallback that mirrors the GPU semantics for testing and non-browser environments.
-* Thorough documentation, tests, and CI configuration.
+* **Tiny, typed DSL** – declare kernels with `@kernel` and launch them with familiar functions: `map`, `reduce`, `scan`, and `matmul`.
+* **Python-to-WGSL compiler** – walk the Python AST, produce a compact SSA-like IR, and render readable WGSL with explicit buffer bindings.
+* **WebGPU runtime** – minimalist JavaScript module that handles adapter selection, buffer uploads, dispatch, and readbacks.
+* **Pyodide integration** – thin bridge that exposes the WebGPU runtime to Python code when running inside Pyodide.
+* **CPU fallback** – NumPy-powered implementation that mirrors the DSL semantics for portable execution and testing.
+* **Modern packaging** – Poetry project configuration, strict type checking, Ruff linting, and Black formatting baked in.
+* **CI-ready** – GitHub Actions workflow exercises tests, type checks, and style checks across Python 3.9–3.12.
 
 ## Installation
+
+### From PyPI
 
 ```bash
 pip install pywg
 ```
 
-For development:
+### From source
 
 ```bash
 git clone https://github.com/your-org/pywg
@@ -34,7 +57,19 @@ cd pywg
 pip install -e .
 ```
 
+The Poetry configuration (`pyproject.toml`) exposes an editable install that includes the runtime and CLI helpers.
+
+### Building distribution artifacts
+
+```bash
+python -m build
+```
+
+This produces source and wheel artifacts in `dist/`. Upload them with `twine` when you are ready to publish.
+
 ## Quick start
+
+Create an elementwise kernel and run it. In CPython the NumPy backend runs automatically; in Pyodide + WebGPU the WGSL code path is used.
 
 ```python
 import numpy as np
@@ -44,70 +79,111 @@ from pywg import kernel, map
 def fuse(i, a, b):
     return a + 2.0 * b
 
-arr_a = np.ones(16, dtype=np.float32)
-arr_b = np.arange(16, dtype=np.float32)
-out = map(fuse, arr_a, arr_b)
-print(out[:4])
+n = 1_000_000
+a = np.ones(n, dtype=np.float32)
+b = np.arange(n, dtype=np.float32)
+out = map(fuse, a, b)
+print(out[:5])
 ```
 
-`pywg` will automatically select a WebGPU backend when available (Pyodide + WebGPU-enabled browser). When WebGPU is not available a NumPy based implementation is used.
+`pywg` performs shape validation, emits IR for `fuse`, and either dispatches a WebGPU compute pass or falls back to NumPy.
 
-## Documentation
+## DSL reference
 
-### Python DSL
-
-The DSL mirrors a subset of NumPy. Kernels are ordinary Python functions decorated with `@kernel` and can use straight-line arithmetic, conditionals, and calls to a curated list of math intrinsics.
+The DSL intentionally mirrors a minimal NumPy subset so kernels stay portable.
 
 | Operation | Description | Example |
 |-----------|-------------|---------|
-| `map`     | Elementwise map with broadcasting | `map(fuse, a, b)` |
-| `reduce`  | Reduction over the last axis | `reduce(add, arr, init=0.0)` |
-| `scan`    | Prefix scan (inclusive/exclusive) | `scan(add, arr, init=0.0, inclusive=False)` |
-| `matmul`  | Dense matrix multiply (float32 / int32) | `matmul(A, B)` |
+| `map`     | Elementwise map with NumPy-style broadcasting | `map(fuse, a, b)` |
+| `reduce`  | Reduce over the last axis with an associative function | `reduce(add, arr, init=0.0)` |
+| `scan`    | Prefix scan (exclusive by default, optional `inclusive=True`) | `scan(add, arr, init=0.0)` |
+| `matmul`  | Dense matrix multiply for `float32` tensors | `matmul(A, B)` |
 
-Supported dtypes: `float32`, `int32`.
+Supported data types: `float32`, `int32`, and booleans for scalar intermediates. Expressions inside kernels allow arithmetic (`+`, `-`, `*`, `/`, `%`), comparisons, scalar conditionals, and math intrinsics such as `abs`, `exp`, `log`, `sin`, `cos`, `min`, and `max`.
 
-### Intermediate Representation
+## Architecture overview
 
-When a kernel is compiled, the function source is captured and converted into a compact IR object (`KernelIR`). The IR tracks inputs, outputs, bindings, and a high-level operation kind. This makes the code generator deterministic and easy to inspect during debugging.
+The pipeline is broken into well-defined layers so you can audit or extend each stage.
 
-### WGSL generation
+1. **DSL front-end (`pywg.dsl`)** – captures Python source with `inspect`, validates the AST, and tags kernel metadata.
+2. **Intermediate representation (`pywg.ir`)** – converts supported AST nodes into a small SSA-like structure, tracking types via `pywg.type_system`.
+3. **WGSL code generation (`pywg.codegen_wgsl`)** – turns IR into WGSL text. Emitters generate buffer layouts, helper functions, and compute entry points with tuned workgroup sizes.
+4. **Runtimes (`pywg.runtime`)** – includes the CPU fallback, the Pyodide bridge, and a JavaScript module (`webgpu_runtime.js`) that speaks WebGPU.
+5. **API surface (`pywg.api`)** – routes calls to the appropriate backend, exposes environment probes, and keeps user-facing APIs ergonomic.
 
-`pywg.codegen_wgsl.generate_wgsl` converts the IR into a readable WGSL shader. The emitter produces the buffer declarations, assigns bindings, and sketches out the structure of the compute entry-point. The generated shader is intentionally small: it contains rich comments with the original Python source, making it ideal for further manual optimisation.
+Each layer is covered by unit tests so regressions are easy to spot.
 
-### Runtime backends
+## Execution backends
 
-* **NumPy fallback (`pywg.runtime.cpu_fallback`)** – portable implementation that mirrors the DSL semantics. Used in tests and when WebGPU is unavailable.
-* **Pyodide bridge (`pywg.runtime.pyodide_bridge`)** – thin adaptor that exposes WebGPU functionality to the Python API when running inside the browser. The bridge gracefully reports errors on CPython.
-* **JavaScript runtime (`pywg/runtime/webgpu_runtime.js`)** – ES module that owns buffer management, pipeline compilation, and command submission.
+`pywg` automatically chooses a backend at runtime:
 
-### Demo
+* **WebGPU** – Activated when running inside Pyodide and `navigator.gpu` is present. The bridge uploads NumPy buffers to GPU buffers, dispatches compute passes, and copies the result back.
+* **CPU fallback** – The NumPy implementation mirrors broadcasting and kernel semantics precisely. Tests validate parity with the GPU path, enabling reliable execution in CI or environments without WebGPU.
 
-The `demo/` directory contains a Pyodide-driven browser demo. It mirrors the `pywg` sources into the Pyodide filesystem at runtime and executes the examples inside the browser. Start a static server (`python -m http.server`) and open the page in a WebGPU-capable browser.
+You can check which backend was used via:
 
-### Limitations
+```python
+from pywg import get_device_info
 
-* The compiler currently records kernel source and emits placeholder WGSL expressions; extending it with full expression support is tracked in future milestones.
-* WebGPU execution requires Pyodide and a browser with WebGPU enabled. The CPU fallback ensures deterministic behaviour elsewhere.
-* Only contiguous arrays with supported dtypes are accepted.
+info = get_device_info()
+print(info["backend"])  # "webgpu" or "cpu"
+```
 
-## Testing
+## Examples
 
-Run the unit tests and static analysis tools with:
+The `examples/` directory showcases the API:
+
+* `examples/01_elementwise.py` – fused elementwise operations with broadcasting.
+* `examples/02_reduce.py` – large-scale summation via `reduce`.
+* `examples/03_scan.py` – exclusive prefix sum on float arrays.
+* `examples/04_matmul.py` – tiled matrix multiplication validated against NumPy.
+
+Run them directly with `python examples/01_elementwise.py` (CPU fallback) or in the browser through the demo.
+
+## Pyodide demo
+
+A browser-based showcase lives in `demo/`:
+
+1. Serve the directory: `cd demo && python -m http.server`.
+2. Open `http://localhost:8000` in a WebGPU-capable browser (Chrome 113+, Edge 113+, or Safari TP with the WebGPU flag enabled).
+3. The page loads Pyodide, installs `pywg`, runs each example, and renders the first few results.
+
+The demo integrates the same Python sources shipped in this repository, so it stays in sync with the package.
+
+## Testing & quality
+
+Continuous integration (GitHub Actions) runs:
 
 ```bash
 pytest
 ruff check .
 black --check .
 mypy
-```
-
-To build distribution artifacts use:
-
-```bash
 python -m build
 ```
 
+Local developers can enable the same checks via `pre-commit install`, which hooks Ruff, Black, and MyPy on each commit. Tests default to the CPU backend; GPU-specific tests are skipped unless `PYWG_GPU=1` is exported.
+
+## Troubleshooting
+
+* **WebGPU not detected** – Ensure you are running inside Pyodide and using a browser with WebGPU enabled. Chrome and Edge often require the `--enable-unsafe-webgpu` flag on older versions.
+* **NumPy dtype errors** – Kernels currently accept contiguous `float32` or `int32` arrays. Use `arr.astype(np.float32, copy=False)` before dispatch if needed.
+* **Performance questions** – Profiling hooks in `pywg.utils` cache workgroup sizes. Delete the cache or adjust heuristics there when experimenting with new hardware.
+* **Pyodide imports failing** – Confirm the Pyodide version matches the one the demo expects and that `webgpu_runtime.js` is reachable from the served path.
+
+## Roadmap
+
+Planned improvements include:
+
+* Expanded dtype coverage (float16, bfloat16, unsigned integers).
+* Richer control flow and vector intrinsics in the DSL.
+* Automatic kernel fusion and ahead-of-time compilation caches.
+* WebGPU pipeline caching across dispatches.
+
+## Contributing
+
+We welcome pull requests! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Run the test suite and linters before submitting patches.
+
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE).
