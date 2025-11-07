@@ -13,7 +13,7 @@
   NumPy runtime                           WebGPU runtime
 ```
 
-The repository ships a full Python package, end-to-end tests, examples, and a Pyodide browser demo so you can validate the workflow locally.
+The project ships with a full Python package, end-to-end tests, examples, and a Pyodide browser demo so you can validate the workflow locally or in CI.
 
 ## Table of contents
 
@@ -43,20 +43,25 @@ The repository ships a full Python package, end-to-end tests, examples, and a Py
 
 ## Installation
 
-### From source (recommended for development)
+### From PyPI
+
+```bash
+pip install pywg
+```
+
+### From source
 
 ```bash
 git clone https://github.com/your-org/pywg
-cd pywg/pywg
+cd pywg
 pip install -e .
 ```
 
-The Poetry configuration (`pywg/pyproject.toml`) exposes an editable install that includes the runtime and CLI helpers.
+The Poetry configuration (`pyproject.toml`) exposes an editable install that includes the runtime and CLI helpers.
 
 ### Building distribution artifacts
 
 ```bash
-cd pywg
 python -m build
 ```
 
@@ -128,18 +133,18 @@ print(info["backend"])  # "webgpu" or "cpu"
 
 The `examples/` directory showcases the API:
 
-* `01_elementwise.py` – fused elementwise operations with broadcasting.
-* `02_reduce.py` – large-scale summation via `reduce`.
-* `03_scan.py` – exclusive prefix sum on float arrays.
-* `04_matmul.py` – tiled matrix multiplication validated against NumPy.
+* `examples/01_elementwise.py` – fused elementwise operations with broadcasting.
+* `examples/02_reduce.py` – large-scale summation via `reduce`.
+* `examples/03_scan.py` – exclusive prefix sum on float arrays.
+* `examples/04_matmul.py` – tiled matrix multiplication validated against NumPy.
 
 Run them directly with `python examples/01_elementwise.py` (CPU fallback) or in the browser through the demo.
 
 ## Pyodide demo
 
-A browser-based showcase lives in `pywg/demo/`:
+A browser-based showcase lives in `demo/`:
 
-1. Serve the directory: `cd pywg/demo && python -m http.server`.
+1. Serve the directory: `cd demo && python -m http.server`.
 2. Open `http://localhost:8000` in a WebGPU-capable browser (Chrome 113+, Edge 113+, or Safari TP with the WebGPU flag enabled).
 3. The page loads Pyodide, installs `pywg`, runs each example, and renders the first few results.
 
@@ -177,8 +182,8 @@ Planned improvements include:
 
 ## Contributing
 
-We welcome pull requests! Please read [CONTRIBUTING.md](pywg/CONTRIBUTING.md) and follow the [Code of Conduct](pywg/CODE_OF_CONDUCT.md). Run the test suite and linters before submitting patches.
+We welcome pull requests! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the [Code of Conduct](CODE_OF_CONDUCT.md). Run the test suite and linters before submitting patches.
 
 ## License
 
-Released under the [MIT License](pywg/LICENSE).
+Released under the [MIT License](LICENSE).
